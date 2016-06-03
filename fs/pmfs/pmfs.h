@@ -188,25 +188,39 @@ extern int pmfs_remount(struct super_block *sb, int *flags, char *data);
 static inline void PERSISTENT_MARK(void)
 {
 	/* TODO: Fix me. */
+    // mmiotrace_printk("PCOMMIT\n");
+    PM_COMMIT();
 }
 
 static inline void PERSISTENT_BARRIER(void)
 {
+    end_epoch();
+    // mmiotrace_printk("BARRIER\n");
+    PM_BARRIER();
 	asm volatile ("sfence\n" : : );
+    start_epoch();
 }
 
 static inline void pmfs_flush_buffer(void *buf, uint32_t len, bool fence)
 {
-	uint32_t i;
+	uint32_t i, o_len = len, j = 0;
 	len = len + ((unsigned long)(buf) & (CACHELINE_SIZE - 1));
-	for (i = 0; i < len; i += CACHELINE_SIZE)
+	for (i = 0, j = 0; i < len; i += CACHELINE_SIZE, ++j)
 		asm volatile ("clflush %0\n" : "+m" (*(char *)(buf+i)));
 	/* Do a fence only if asked. We often don't need to do a fence
 	 * immediately after clflush because even if we get context switched
 	 * between clflush and subsequent fence, the context switch operation
 	 * provides implicit fence. */
+    	// mmiotrace_printk("FLUSH  origin=%p o_len=%u flushed=%u\n", buf, o_len, j*CACHELINE_SIZE);
+	PM_FLUSH(buf, o_len, j*CACHELINE_SIZE);
+	end_epoch();
 	if (fence)
+	{
+        	// mmiotrace_printk("FENCE\n");
+	        PM_FENCE();
 		asm volatile ("sfence\n" : : );
+    	}
+	start_epoch();
 }
 
 /* symlink.c */
@@ -335,7 +349,7 @@ static inline pmfs_journal_t *pmfs_get_journal(struct super_block *sb)
 	struct pmfs_super_block *ps = pmfs_get_super(sb);
 
 	return (pmfs_journal_t *)((char *)ps +
-			le64_to_cpu(ps->s_journal_offset));
+			le64_to_cpu(PM_READ(ps->s_journal_offset)));
 }
 
 static inline struct pmfs_inode *pmfs_get_inode_table(struct super_block *sb)
@@ -343,7 +357,7 @@ static inline struct pmfs_inode *pmfs_get_inode_table(struct super_block *sb)
 	struct pmfs_super_block *ps = pmfs_get_super(sb);
 
 	return (struct pmfs_inode *)((char *)ps +
-			le64_to_cpu(ps->s_inode_table_offset));
+			le64_to_cpu(PM_READ(ps->s_inode_table_offset)));
 }
 
 static inline struct pmfs_super_block *pmfs_get_redund_super(struct super_block *sb)
@@ -369,25 +383,25 @@ static inline void pmfs_memcpy_atomic (void *dst, const void *src, u8 size)
 		case 1: {
 			volatile u8 *daddr = dst;
 			const u8 *saddr = src;
-			*daddr = *saddr;
+			PM_EQU(*daddr, *saddr);
 			break;
 		}
 		case 2: {
 			volatile __le16 *daddr = dst;
 			const u16 *saddr = src;
-			*daddr = cpu_to_le16(*saddr);
+			PM_EQU(*daddr, cpu_to_le16(*saddr));
 			break;
 		}
 		case 4: {
 			volatile __le32 *daddr = dst;
 			const u32 *saddr = src;
-			*daddr = cpu_to_le32(*saddr);
+			PM_EQU(*daddr, cpu_to_le32(*saddr));
 			break;
 		}
 		case 8: {
 			volatile __le64 *daddr = dst;
 			const u64 *saddr = src;
-			*daddr = cpu_to_le64(*saddr);
+			PM_EQU(*daddr, cpu_to_le64(*saddr));
 			break;
 		}
 		default:
@@ -401,13 +415,13 @@ static inline void pmfs_update_time_and_size(struct inode *inode,
 {
 	__le32 words[2];
 	__le64 new_pi_size = cpu_to_le64(i_size_read(inode));
-
+    PM_READ(pi->i_size);PM_READ(pi->i_ctime);PM_READ(pi->i_mtime);PM_WRITE(pi->i_size);PM_WRITE(pi->i_ctime);PM_WRITE(pi->i_mtime);
 	/* pi->i_size, pi->i_ctime, and pi->i_mtime need to be atomically updated.
  	* So use cmpxchg16b here. */
 	words[0] = cpu_to_le32(inode->i_ctime.tv_sec);
 	words[1] = cpu_to_le32(inode->i_mtime.tv_sec);
 	/* TODO: the following function assumes cmpxchg16b instruction writes
- 	* 16 bytes atomically. Confirm if it is really true. */
+ 	* 16 bytes atomically. Confirm if it is really true. PM_WRITE */
 	cmpxchg_double_local(&pi->i_size, (u64 *)&pi->i_ctime, pi->i_size,
 		*(u64 *)&pi->i_ctime, new_pi_size, *(u64 *)words);
 }
@@ -417,7 +431,9 @@ static inline void memset_nt(void *dest, uint32_t dword, size_t length)
 {
 	uint64_t dummy1, dummy2;
 	uint64_t qword = ((uint64_t)dword << 32) | dword;
-
+    /* genius, without altering or replicating the loop, I counted how many times it runs */
+    // mmiotrace_printk("NT origin=%p o_len=%lu moved=%lu\n", dest, length, length - (length%4));
+    PM_MOVNTI(dest, length, length - (length%4));
 	asm volatile ("movl %%edx,%%ecx\n"
 		"andl $63,%%edx\n"
 		"shrl $6,%%ecx\n"
@@ -447,6 +463,7 @@ static inline void memset_nt(void *dest, uint32_t dword, size_t length)
 		"movnti %%eax,(%%rdi)\n"
 		"12:\n"
 		: "=D"(dummy1), "=d" (dummy2) : "D" (dest), "a" (qword), "d" (length) : "memory", "rcx");
+        /*PM_NT_WRITE*/
 }
 
 static inline u64 __pmfs_find_data_block(struct super_block *sb,
@@ -457,14 +474,14 @@ static inline u64 __pmfs_find_data_block(struct super_block *sb,
 	u32 height, bit_shift;
 	unsigned int idx;
 
-	height = pi->height;
-	bp = le64_to_cpu(pi->root);
+	height = PM_READ(pi->height);
+	bp = le64_to_cpu(PM_READ(pi->root));
 
 	while (height > 0) {
 		level_ptr = pmfs_get_block(sb, bp);
 		bit_shift = (height - 1) * META_BLK_SHIFT;
 		idx = blocknr >> bit_shift;
-		bp = le64_to_cpu(level_ptr[idx]);
+		bp = le64_to_cpu(PM_READ(level_ptr[idx]));
 		if (bp == 0)
 			return 0;
 		blocknr = blocknr & ((1 << bit_shift) - 1);
@@ -475,12 +492,12 @@ static inline u64 __pmfs_find_data_block(struct super_block *sb,
 
 static inline unsigned int pmfs_inode_blk_shift (struct pmfs_inode *pi)
 {
-	return blk_type_to_shift[pi->i_blk_type];
+	return blk_type_to_shift[PM_READ(pi->i_blk_type)];
 }
 
 static inline uint32_t pmfs_inode_blk_size (struct pmfs_inode *pi)
 {
-	return blk_type_to_size[pi->i_blk_type];
+	return blk_type_to_size[PM_READ(pi->i_blk_type)];
 }
 
 /* If this is part of a read-modify-write of the inode metadata,
@@ -615,7 +632,7 @@ int pmfs_check_dir_entry(const char *function, struct inode *dir,
 static inline int pmfs_match(int len, const char *const name,
 			      struct pmfs_direntry *de)
 {
-	if (len == de->name_len && de->ino && !memcmp(de->name, name, len))
+	if (len == PM_READ(de->name_len) && PM_READ(de->ino) && !PM_MEMCMP(de->name, name, len))
 		return 1;
 	return 0;
 }

@@ -19,6 +19,8 @@
 
 #include <linux/types.h>
 #include <linux/magic.h>
+#include <linux/mmiotrace.h>
+
 
 /*
  * The PMFS filesystem constants/structures
@@ -202,5 +204,7 @@ struct pmfs_super_block {
 
 /* INODE HINT  START at 3 */ 
 #define PMFS_FREE_INODE_HINT_START      (3)
+
+#include "pm_instr.h"
 
 #endif /* _LINUX_PMFS_DEF_H */

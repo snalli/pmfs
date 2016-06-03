@@ -21,14 +21,14 @@ static inline void pmfs_sync_super(struct pmfs_super_block *ps)
 {
 	u16 crc = 0;
 
-	ps->s_wtime = cpu_to_le32(get_seconds());
-	ps->s_sum = 0;
+	PM_EQU(ps->s_wtime, cpu_to_le32(get_seconds()));
+	PM_EQU(ps->s_sum, 0);
 	crc = crc16(~0, (__u8 *)ps + sizeof(__le16),
 			PMFS_SB_STATIC_SIZE(ps) - sizeof(__le16));
-	ps->s_sum = cpu_to_le16(crc);
+	PM_EQU(ps->s_sum, cpu_to_le16(crc));
 	/* Keep sync redundant super block */
-	memcpy((void *)ps + PMFS_SB_SIZE, (void *)ps,
-		sizeof(struct pmfs_super_block));
+	PM_MEMCPY((void *)ps + PMFS_SB_SIZE, (void *)ps, 
+                sizeof(struct pmfs_super_block));
 }
 
 #if 0

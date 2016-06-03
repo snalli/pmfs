@@ -90,7 +90,7 @@ static inline void pmfs_undo_logentry(struct super_block *sb,
 		data = pmfs_get_block(sb, le64_to_cpu(le->addr_offset));
 		/* Undo changes by flushing the log entry to pmfs */
 		pmfs_memunlock_range(sb, data, le->size);
-		memcpy(data, le->data, le->size);
+		PM_MEMCPY(data, le->data, le->size);
 		pmfs_memlock_range(sb, data, le->size);
 		pmfs_flush_buffer(data, le->size, false);
 	}
@@ -123,11 +123,11 @@ static void pmfs_flush_transaction(struct super_block *sb,
 	char *data;
 
 	for (i = 0; i < trans->num_used; i++, le++) {
-		if (le->size) {
-			data = pmfs_get_block(sb,le64_to_cpu(le->addr_offset));
+		if (PM_READ(le->size)) {
+			data = pmfs_get_block(sb,le64_to_cpu(PM_READ(le->addr_offset)));
 			if (sbi->redo_log) {
 				pmfs_memunlock_range(sb, data, le->size);
-				memcpy(data, le->data, le->size);
+				PM_MEMCPY(data, le->data, le->size);
 				pmfs_memlock_range(sb, data, le->size);
 			} else
 				pmfs_flush_buffer(data, le->size, false);
@@ -137,7 +137,7 @@ static void pmfs_flush_transaction(struct super_block *sb,
 
 static inline void invalidate_gen_id(pmfs_logentry_t *le)
 {
-	le->gen_id = 0;
+	PM_EQU(le->gen_id, 0);
 	pmfs_flush_buffer(le, LOGENTRY_SIZE, false);
 }
 
@@ -177,7 +177,7 @@ static void pmfs_redo_transaction(struct super_block *sb,
 			/* flush data if we are called during recovery */
 			if (recover) {
 				pmfs_memunlock_range(sb, data, le->size);
-				memcpy(data, le->data, le->size);
+				PM_MEMCPY(data, le->data, le->size);
 				pmfs_memlock_range(sb, data, le->size);
 			}
 			pmfs_flush_buffer(data, le->size, false);
@@ -317,7 +317,7 @@ static void pmfs_clean_journal(struct super_block *sb, bool unmount)
 {
 	struct pmfs_sb_info *sbi = PMFS_SB(sb);
 	pmfs_journal_t *journal = pmfs_get_journal(sb);
-	uint32_t head = le32_to_cpu(journal->head);
+	uint32_t head = le32_to_cpu(PM_READ(journal->head));
 	uint32_t new_head, tail;
 	uint16_t gen_id;
 	volatile __le64 *ptr_tail_genid = (volatile __le64 *)&journal->tail;
@@ -329,7 +329,7 @@ static void pmfs_clean_journal(struct super_block *sb, bool unmount)
 	 * to write to journal's tail and gen_id atomically, we thought we
 	 * should use volatile to read them simultaneously and avoid locking
 	 * them. */
-	tail_genid = le64_to_cpu(*ptr_tail_genid);
+	tail_genid = le64_to_cpu(PM_READ(*ptr_tail_genid));
 	tail = tail_genid & 0xFFFFFFFF;
 	gen_id = (tail_genid >> 32) & 0xFFFF;
 
@@ -339,7 +339,7 @@ static void pmfs_clean_journal(struct super_block *sb, bool unmount)
 	pmfs_dbg_trans("starting journal cleaning %x %x\n", head, tail);
 	while (head != tail) {
 		le = (pmfs_logentry_t *)(sbi->journal_base_addr + head);
-		if (gen_id == le16_to_cpu(le->gen_id)) {
+		if (gen_id == le16_to_cpu(PM_READ(le->gen_id))) {
 			/* found a valid log entry, process the transaction */
 			new_head = pmfs_process_transaction(sb, head, tail,
 				le, false);
@@ -362,14 +362,14 @@ static void pmfs_clean_journal(struct super_block *sb, bool unmount)
 	PERSISTENT_MARK();
 	PERSISTENT_BARRIER();
 	pmfs_memunlock_range(sb, journal, sizeof(*journal));
-	journal->head = cpu_to_le32(head);
+	PM_EQU(journal->head, cpu_to_le32(head)); // journal->head = cpu_to_le32(head); PM_WRITE
 	pmfs_memlock_range(sb, journal, sizeof(*journal));
 	pmfs_flush_buffer(&journal->head, sizeof(journal->head), true);
 	if (unmount) {
 		PERSISTENT_MARK();
-		if (journal->head != journal->tail)
+		if (PM_READ(journal->head) != PM_READ(journal->tail))
 			pmfs_dbg("PMFS: umount but journal not empty %x:%x\n",
-			le32_to_cpu(journal->head), le32_to_cpu(journal->tail));
+			le32_to_cpu(PM_READ(journal->head)), le32_to_cpu(PM_READ(journal->tail)));
 		PERSISTENT_BARRIER();
 	}
 	pmfs_dbg_trans("leaving journal cleaning %x %x\n", head, tail);
@@ -410,7 +410,7 @@ static int pmfs_journal_cleaner_run(struct super_block *sb)
 	init_waitqueue_head(&sbi->log_cleaner_wait);
 
 	sbi->log_cleaner_thread = kthread_run(pmfs_log_cleaner, sb,
-			"pmfs_log_cleaner_0x%llx", sbi->phys_addr);
+			"plc_0x%llx", sbi->phys_addr);
 	if (IS_ERR(sbi->log_cleaner_thread)) {
 		/* failure at boot is fatal */
 		pmfs_err(sb, "Failed to start pmfs log cleaner thread\n");
@@ -425,10 +425,10 @@ int pmfs_journal_soft_init(struct super_block *sb)
 	pmfs_journal_t *journal = pmfs_get_journal(sb);
 
 	sbi->next_transaction_id = 0;
-	sbi->journal_base_addr = pmfs_get_block(sb,le64_to_cpu(journal->base));
-	sbi->jsize = le32_to_cpu(journal->size);
+	sbi->journal_base_addr = pmfs_get_block(sb,le64_to_cpu(PM_READ(journal->base)));
+	sbi->jsize = le32_to_cpu(PM_READ(journal->size));
 	mutex_init(&sbi->journal_mutex);
-	sbi->redo_log = !!le16_to_cpu(journal->redo_logging);
+	sbi->redo_log = !!le16_to_cpu(PM_READ(journal->redo_logging));
 
 	return pmfs_journal_cleaner_run(sb);
 }
@@ -440,12 +440,12 @@ int pmfs_journal_hard_init(struct super_block *sb, uint64_t base,
 	pmfs_journal_t *journal = pmfs_get_journal(sb);
 
 	pmfs_memunlock_range(sb, journal, sizeof(*journal));
-	journal->base = cpu_to_le64(base);
-	journal->size = cpu_to_le32(size);
-	journal->gen_id = cpu_to_le16(1);
-	journal->head = journal->tail = 0;
+	PM_EQU(journal->base, cpu_to_le64(base));
+	PM_EQU(journal->size, cpu_to_le32(size));
+	PM_EQU(journal->gen_id, cpu_to_le16(1));
+	PM_EQU(journal->head, 0); PM_EQU(journal->tail, 0);
 	/* lets do Undo logging for now */
-	journal->redo_logging = 0;
+	PM_EQU(journal->redo_logging, 0);
 	pmfs_memlock_range(sb, journal, sizeof(*journal));
 
 	sbi->journal_base_addr = pmfs_get_block(sb, base);
@@ -516,11 +516,11 @@ pmfs_transaction_t *pmfs_new_transaction(struct super_block *sb,
 
 	mutex_lock(&sbi->journal_mutex);
 
-	tail = le32_to_cpu(journal->tail);
-	head = le32_to_cpu(journal->head);
+	tail = le32_to_cpu(PM_READ(journal->tail));
+	head = le32_to_cpu(PM_READ(journal->head));
 	trans->transaction_id = sbi->next_transaction_id++;
 again:
-	trans->gen_id = le16_to_cpu(journal->gen_id);
+	trans->gen_id = le16_to_cpu(PM_READ(journal->gen_id));
 	avail_size = (tail >= head) ?
 		(sbi->jsize - (tail - head)) : (head - tail);
 	avail_size = avail_size - LOGENTRY_SIZE;
@@ -532,28 +532,30 @@ again:
 		if ((avail_size + freed_size) < req_size)
 			goto journal_full;
 	}
-	base = le64_to_cpu(journal->base) + tail;
+	base = le64_to_cpu(PM_READ(journal->base)) + tail;
 	tail = tail + req_size;
 	/* journal wraparound because of this transaction allocation.
 	 * start the transaction from the beginning of the journal so
 	 * that we don't have any wraparound within a transaction */
+    start_epoch();
 	pmfs_memunlock_range(sb, journal, sizeof(*journal));
 	if (tail >= sbi->jsize) {
 		u64 *ptr;
 		tail = 0;
 		ptr = (u64 *)&journal->tail;
-		/* writing 8-bytes atomically setting tail to 0 */
-		set_64bit(ptr, (__force u64)cpu_to_le64((u64)next_gen_id(
-					le16_to_cpu(journal->gen_id)) << 32));
+		/* writing 8-bytes atomically setting tail to 0 (using set_64bit(ptr, ...)) */
+		PM_EQU(journal->tail, (__force u64)cpu_to_le64((u64)next_gen_id(
+					le16_to_cpu(PM_READ(journal->gen_id))) << 32));
 		pmfs_memlock_range(sb, journal, sizeof(*journal));
 		pmfs_dbg_trans("journal wrapped. tail %x gid %d cur tid %d\n",
 			le32_to_cpu(journal->tail),le16_to_cpu(journal->gen_id),
 				sbi->next_transaction_id - 1);
 		goto again;
 	} else {
-		journal->tail = cpu_to_le32(tail);
+		PM_EQU(journal->tail, cpu_to_le32(tail));
 		pmfs_memlock_range(sb, journal, sizeof(*journal));
 	}
+    start_txn();
 	pmfs_flush_buffer(&journal->tail, sizeof(u64), false);
 	mutex_unlock(&sbi->journal_mutex);
 
@@ -588,10 +590,10 @@ static inline void pmfs_commit_logentry(struct super_block *sb,
 		PERSISTENT_MARK();
 		PERSISTENT_BARRIER();
 		/* Atomically write the commit type */
-		le->type |= LE_COMMIT;
+		PM_EQU(le->type, le->type | LE_COMMIT); // le->type |= LE_COMMIT; PM_WRITE
 		barrier();
 		/* Atomically make the log entry valid */
-		le->gen_id = cpu_to_le16(trans->gen_id);
+		PM_EQU(le->gen_id, cpu_to_le16(trans->gen_id)); // le->gen_id = cpu_to_le16(trans->gen_id); PM_WRITE
 		pmfs_flush_buffer(le, LOGENTRY_SIZE, false);
 		PERSISTENT_MARK();
 		PERSISTENT_BARRIER();
@@ -605,10 +607,10 @@ static inline void pmfs_commit_logentry(struct super_block *sb,
 		PERSISTENT_MARK();
 		PERSISTENT_BARRIER();
 		/* Atomically write the commit type */
-		le->type |= LE_COMMIT;
+		PM_OR_EQU(le->type, LE_COMMIT);// le->type |= LE_COMMIT; PM_WRITE
 		barrier();
 		/* Atomically make the log entry valid */
-		le->gen_id = cpu_to_le16(trans->gen_id);
+		PM_EQU(le->gen_id, cpu_to_le16(trans->gen_id)); // le->gen_id = cpu_to_le16(trans->gen_id); PM_WRITE
 		pmfs_flush_buffer(le, LOGENTRY_SIZE, true);
 	}
 }
@@ -648,17 +650,17 @@ int pmfs_add_logentry(struct super_block *sb,
 
 	pmfs_memunlock_range(sb, le, sizeof(*le) * num_les);
 	for (i = 0; i < num_les; i++) {
-		le->addr_offset = cpu_to_le64(le_start);
-		le->transaction_id = cpu_to_le32(trans->transaction_id);
+		PM_EQU(le->addr_offset, cpu_to_le64(le_start)); // le->addr_offset = cpu_to_le64(le_start); /* PM_WRITE */
+		PM_EQU(le->transaction_id, cpu_to_le32(trans->transaction_id)); // le->transaction_id = cpu_to_le32(trans->transaction_id); /* PM_WRITE */
 		le_size = (i == (num_les - 1)) ? size : sizeof(le->data);
-		le->size = le_size;
+		PM_EQU(le->size, le_size); // le->size = le_size; /* PM_WRITE */
 		size -= le_size;
 		if (le_size)
-			memcpy(le->data, addr, le_size);
-		le->type = type;
+			PM_MEMCPY(le->data, addr, le_size); // memcpy(le->data, addr, le_size); /* PM_WRITE */
+		PM_EQU(le->type, type); // le->type = type; /* PM_WRITE */
 
 		if (i == 0 && trans->num_used == 0)
-			le->type |= LE_START;
+			PM_EQU(le->type, le->type|LE_START); // le->type |= LE_START; /* PM_WRITE */
 		trans->num_used++;
 
 		/* handle special log entry */
@@ -672,7 +674,7 @@ int pmfs_add_logentry(struct super_block *sb,
 		barrier();
 
 		/* Atomically make the log entry valid */
-		le->gen_id = cpu_to_le16(trans->gen_id);
+		PM_EQU(le->gen_id, cpu_to_le16(trans->gen_id)); // le->gen_id = cpu_to_le16(trans->gen_id); /* PM_WRITE */
 		pmfs_flush_buffer(le, LOGENTRY_SIZE, false);
 
 		addr += le_size;
@@ -692,6 +694,7 @@ int pmfs_commit_transaction(struct super_block *sb,
 {
 	if (trans == NULL)
 		return 0;
+	PERSISTENT_BARRIER(); // Assumed barrier, but not mentioned
 	/* Add the commit log-entry */
 	pmfs_add_logentry(sb, trans, NULL, 0, LE_COMMIT);
 
@@ -700,6 +703,8 @@ int pmfs_commit_transaction(struct super_block *sb,
 
 	current->journal_info = trans->parent;
 	pmfs_free_transaction(trans);
+    end_epoch();
+    end_txn();
 	return 0;
 }
 
@@ -764,9 +769,9 @@ static void pmfs_forward_journal(struct super_block *sb, struct pmfs_sb_info
 	/* make all changes persistent before advancing gen_id and head */
 	PERSISTENT_BARRIER();
 	pmfs_memunlock_range(sb, journal, sizeof(*journal));
-	journal->gen_id = cpu_to_le16(gen_id);
+	PM_EQU(journal->gen_id, cpu_to_le16(gen_id));
 	barrier();
-	journal->head = journal->tail;
+	PM_EQU(journal->head, journal->tail);
 	pmfs_memlock_range(sb, journal, sizeof(*journal));
 	pmfs_flush_buffer(journal, sizeof(*journal), false);
 }

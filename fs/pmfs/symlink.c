@@ -31,8 +31,8 @@ int pmfs_block_symlink(struct inode *inode, const char *symname, int len)
 	blockp = pmfs_get_block(sb, block);
 
 	pmfs_memunlock_block(sb, blockp);
-	memcpy(blockp, symname, len);
-	blockp[len] = '\0';
+	PM_MEMCPY(blockp, symname, len);
+	PM_EQU(blockp[len], '\0');
 	pmfs_memlock_block(sb, blockp);
 	pmfs_flush_buffer(blockp, len+1, false);
 	return 0;

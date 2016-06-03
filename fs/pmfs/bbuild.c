@@ -45,7 +45,7 @@ static void pmfs_clear_datablock_inode(struct super_block *sb)
 	pmfs_add_logentry(sb, trans, pi, MAX_DATA_PER_LENTRY, LE_DATA);
 
 	pmfs_memunlock_inode(sb, pi);
-	memset(pi, 0, MAX_DATA_PER_LENTRY);
+	PM_MEMSET(pi, 0, MAX_DATA_PER_LENTRY);
 	pmfs_memlock_inode(sb, pi);
 
 	/* commit the transaction */
@@ -128,13 +128,13 @@ static int pmfs_allocate_datablock_block_inode(pmfs_transaction_t *trans,
 	int errval;
 	
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_mode = 0;
-	pi->i_links_count = cpu_to_le16(1);
-	pi->i_blk_type = PMFS_BLOCK_TYPE_4K;
-	pi->i_flags = 0;
-	pi->height = 0;
-	pi->i_dtime = 0; 
-	pi->i_size = cpu_to_le64(num_blocks << sb->s_blocksize_bits);
+	PM_EQU(pi->i_mode, 0); //pi->i_mode = 0; /* PM_WRITE */
+	PM_EQU(pi->i_links_count, cpu_to_le16(1)); //pi->i_links_count = cpu_to_le16(1); /* PM_WRITE */
+	PM_EQU(pi->i_blk_type, PMFS_BLOCK_TYPE_4K); // pi->i_blk_type = PMFS_BLOCK_TYPE_4K;
+	PM_EQU(pi->i_flags, 0); // pi->i_flags = 0;
+	PM_EQU(pi->height, 0); //pi->height = 0;
+	PM_EQU(pi->i_dtime, 0); // pi->i_dtime = 0; 
+	PM_EQU(pi->i_size, cpu_to_le64(num_blocks << sb->s_blocksize_bits)); //pi->i_size = cpu_to_le64(num_blocks << sb->s_blocksize_bits);
 	pmfs_memlock_inode(sb, pi);
 
 	errval = __pmfs_alloc_blocks(trans, sb, pi, 0, num_blocks, false);
@@ -185,8 +185,8 @@ void pmfs_save_blocknode_mappings(struct super_block *sb)
 			p = pmfs_get_block(sb, bp); 
 			pmfs_memunlock_block(sb, p);
 		}
-		p[j].block_low = cpu_to_le64(i->block_low);
-		p[j].block_high = cpu_to_le64(i->block_high);
+		PM_EQU(p[j].block_low, cpu_to_le64(i->block_low));
+		PM_EQU(p[j].block_high, cpu_to_le64(i->block_high));
 		j++;
 
 		if (j == 256) {
@@ -215,14 +215,14 @@ void pmfs_save_blocknode_mappings(struct super_block *sb)
 
 	pmfs_memunlock_range(sb, &super->s_wtime, PMFS_FAST_MOUNT_FIELD_SIZE);
 
-	super->s_wtime = cpu_to_le32(get_seconds());
-	super->s_num_blocknode_allocated = 
-			cpu_to_le64(sbi->num_blocknode_allocated);
-	super->s_num_free_blocks = cpu_to_le64(sbi->num_free_blocks);
-	super->s_inodes_count = cpu_to_le32(sbi->s_inodes_count);
-	super->s_free_inodes_count = cpu_to_le32(sbi->s_free_inodes_count);
-	super->s_inodes_used_count = cpu_to_le32(sbi->s_inodes_used_count);
-	super->s_free_inode_hint = cpu_to_le32(sbi->s_free_inode_hint);
+	PM_EQU(super->s_wtime, cpu_to_le32(get_seconds()));
+	PM_EQU(super->s_num_blocknode_allocated,
+			cpu_to_le64(sbi->num_blocknode_allocated));
+	PM_EQU(super->s_num_free_blocks, cpu_to_le64(sbi->num_free_blocks));
+	PM_EQU(super->s_inodes_count, cpu_to_le32(sbi->s_inodes_count));
+	PM_EQU(super->s_free_inodes_count, cpu_to_le32(sbi->s_free_inodes_count));
+	PM_EQU(super->s_inodes_used_count, cpu_to_le32(sbi->s_inodes_used_count));
+	PM_EQU(super->s_free_inode_hint, cpu_to_le32(sbi->s_free_inode_hint));
 
 	pmfs_memlock_range(sb, &super->s_wtime, PMFS_FAST_MOUNT_FIELD_SIZE);
 	/* commit the transaction */

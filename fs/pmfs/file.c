@@ -61,7 +61,7 @@ hint_set:
 		new_size, pi->i_size, le64_to_cpu(pi->root));
 	pmfs_dbg_verbose("Setting the hint to 0x%x\n", block_type);
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_blk_type = block_type;
+	PM_EQU(pi->i_blk_type, block_type);
 	pmfs_memlock_inode(sb, pi);
 	return 0;
 }
@@ -120,15 +120,15 @@ static long pmfs_fallocate(struct file *file, int mode, loff_t offset,
 
 	pmfs_memunlock_inode(sb, pi);
 	if (ret || (mode & FALLOC_FL_KEEP_SIZE)) {
-		pi->i_flags |= cpu_to_le32(PMFS_EOFBLOCKS_FL);
+		PM_EQU(pi->i_flags, pi->i_flags | cpu_to_le32(PMFS_EOFBLOCKS_FL));
 	}
 
 	if (!(mode & FALLOC_FL_KEEP_SIZE) && new_size > inode->i_size) {
 		inode->i_size = new_size;
-		pi->i_size = cpu_to_le64(inode->i_size);
+		PM_EQU(pi->i_size, cpu_to_le64(inode->i_size));
 	}
-	pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
-	pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
+	PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
+	PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
 	pmfs_memlock_inode(sb, pi);
 
 	pmfs_commit_transaction(sb, trans);

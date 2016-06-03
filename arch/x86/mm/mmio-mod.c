@@ -159,17 +159,18 @@ static void pre(struct kmmio_probe *p, struct pt_regs *regs,
 	my_reason->addr = addr;
 	my_reason->ip = instptr;
 
-	my_trace->phys = addr - trace->probe.addr + trace->phys;
+	//my_trace->phys = addr - trace->probe.addr + trace->phys;
+	my_trace->phys = addr; // virtual address 
 	my_trace->map_id = trace->id;
 
 	/*
 	 * Only record the program counter when requested.
 	 * It may taint clean-room reverse engineering.
 	 */
-	if (trace_pc)
+	// if (trace_pc)
 		my_trace->pc = instptr;
-	else
-		my_trace->pc = 0;
+	// else
+	//	my_trace->pc = 0;
 
 	/*
 	 * XXX: the timestamp recorded will be *after* the tracing has been
@@ -344,7 +345,12 @@ int mmiotrace_printk(const char *fmt, ...)
 
 	spin_lock_irqsave(&trace_lock, flags);
 	if (is_enabled())
+    {
+        // pr_info("able to print.\n");
 		ret = mmio_trace_printk(fmt, args);
+    } else {
+        // pr_info("unable to print.\n");
+    }
 	spin_unlock_irqrestore(&trace_lock, flags);
 
 	va_end(args);

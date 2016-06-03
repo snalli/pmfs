@@ -60,8 +60,10 @@ __pmfs_xip_file_write(struct address_space *mapping, const char __user *buf,
 	do {
 		unsigned long index;
 		unsigned long offset;
+		unsigned long cst1, cst2;
 		size_t copied;
-		void *xmem;
+		void *xmem, *dst;
+		unsigned long long s, len;
 		unsigned long xpfn;
 
 		offset = (pos & (sb->s_blocksize - 1)); /* Within page */
@@ -73,10 +75,35 @@ __pmfs_xip_file_write(struct address_space *mapping, const char __user *buf,
 		status = pmfs_get_xip_mem(mapping, index, 1, &xmem, &xpfn);
 		if (status)
 			break;
+
+	        dst = xmem + offset;
 		pmfs_xip_mem_protect(sb, xmem + offset, bytes, 1);
 		copied = bytes -
 		__copy_from_user_inatomic_nocache(xmem + offset, buf, bytes);
 		pmfs_xip_mem_protect(sb, xmem + offset, bytes, 0);
+
+		/*
+		cst1 = 0, cst2 = 0, len = copied, s = (unsigned long long)(xmem + offset);
+		if(s & 0x7)
+		{
+			cst1 = (s & ~0x7) + 0x8 - s;
+			PM_STORE((void *)s, cst1);
+		}
+		if((s+len) & 0x7)
+			cst2 = (s+len) - ((s+len) & ~0x7);
+
+        	if(copied - (cst1 + cst2))
+		{
+			if(s & 0x7)
+				dst = (void *)((s & 0x7) + 0x8);
+        		PM_MOVNTI(dst, bytes, copied - (cst1+cst2));
+		}
+		
+		if(cst2)
+			PM_STORE((void *)((s+len) & ~0x7), cst2);
+		*/
+		PM_MOVNTI(dst, count, copied);
+		PM_FENCE();
 
 		/* if start or end dest address is not 8 byte aligned, 
 	 	 * __copy_from_user_inatomic_nocache uses cacheable instructions
@@ -119,15 +146,40 @@ static ssize_t pmfs_file_write_fast(struct super_block *sb, struct inode *inode,
 	struct pmfs_inode *pi, const char __user *buf, size_t count, loff_t pos,
 	loff_t *ppos, u64 block)
 {
-	void *xmem = pmfs_get_block(sb, block);
+	void *xmem = pmfs_get_block(sb, block), *dst;
 	size_t copied, ret = 0, offset;
+	unsigned long cst1 = 0, cst2 = 0;
+	unsigned long long s, len;
 
 	offset = pos & (sb->s_blocksize - 1);
-
+    	dst = xmem + offset;
 	pmfs_xip_mem_protect(sb, xmem + offset, count, 1);
 	copied = count - __copy_from_user_inatomic_nocache(xmem
 		+ offset, buf, count);
 	pmfs_xip_mem_protect(sb, xmem + offset, count, 0);
+
+	/*
+	cst1 = 0, cst2 = 0, len = copied, s = (unsigned long long)(xmem + offset);
+	if(s & 0x7)
+	{
+		cst1 = (s & ~0x7) + 0x8 - s;
+		PM_STORE((void*)s, cst1);
+	}
+	if((s+len) & 0x7)
+		cst2 = (s+len) - ((s+len) & ~0x7);
+
+    	if(copied - (cst1 + cst2))
+	{
+		if (s & 0x7)
+			dst = (void *)((s & 0x7) + 0x8);
+    		PM_MOVNTI(dst, count, copied - (cst1 + cst2));
+	}
+	
+	if(cst2)
+		PM_STORE((void *)((s+len) & ~0x7), cst2);
+	*/
+	PM_MOVNTI(dst, count, copied);
+	PM_FENCE();
 
 	pmfs_flush_edge_cachelines(pos, copied, xmem + offset);
 

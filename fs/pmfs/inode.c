@@ -40,13 +40,13 @@ uint32_t blk_type_to_size[PMFS_BLOCK_TYPE_MAX] = {0x1000, 0x200000, 0x40000000};
 static int pmfs_new_data_block(struct super_block *sb, struct pmfs_inode *pi,
 		unsigned long *blocknr, int zero)
 {
-	unsigned int data_bits = blk_type_to_shift[pi->i_blk_type];
+	unsigned int data_bits = blk_type_to_shift[PM_READ(pi->i_blk_type)];
 
-	int errval = pmfs_new_block(sb, blocknr, pi->i_blk_type, zero);
+	int errval = pmfs_new_block(sb, blocknr, PM_READ(pi->i_blk_type), zero);
 
 	if (!errval) {
 		pmfs_memunlock_inode(sb, pi);
-		le64_add_cpu(&pi->i_blocks,
+		le64_add_cpu(PM_RD_WR_P(pi->i_blocks),
 			(1 << (data_bits - sb->s_blocksize_bits)));
 		pmfs_memlock_inode(sb, pi);
 	}
@@ -64,7 +64,7 @@ u64 pmfs_find_data_block(struct inode *inode, unsigned long file_blocknr)
 	struct pmfs_inode *pi = pmfs_get_inode(sb, inode->i_ino);
 	u32 blk_shift;
 	unsigned long blk_offset, blocknr = file_blocknr;
-	unsigned int data_bits = blk_type_to_shift[pi->i_blk_type];
+	unsigned int data_bits = blk_type_to_shift[PM_READ(pi->i_blk_type)];
 	unsigned int meta_bits = META_BLK_SHIFT;
 	u64 bp;
 
@@ -73,13 +73,13 @@ u64 pmfs_find_data_block(struct inode *inode, unsigned long file_blocknr)
 	blk_offset = file_blocknr & ((1 << blk_shift) - 1);
 	blocknr = file_blocknr >> blk_shift;
 
-	if (blocknr >= (1UL << (pi->height * meta_bits)))
+	if (blocknr >= (1UL << (PM_READ(pi->height) * meta_bits)))
 		return 0;
 
-	bp = __pmfs_find_data_block(sb, pi, blocknr);
+	bp = __pmfs_find_data_block(sb, pi, blocknr); // pi is a pointer to memory in NVM, it itself is volatile 
 	pmfs_dbg1("find_data_block %lx, %x %llx blk_p %p blk_shift %x"
 		" blk_offset %lx\n", file_blocknr, pi->height, bp,
-		pmfs_get_block(sb, bp), blk_shift, blk_offset);
+		pmfs_get_block(sb, bp), blk_shift, blk_offset); // These debug statements don't matter !
 
 	if (bp == 0)
 		return 0;
@@ -226,10 +226,10 @@ static inline bool is_empty_meta_block(__le64 *node, unsigned int start_idx,
 {
 	int i, last_idx = (1 << META_BLK_SHIFT) - 1;
 	for (i = 0; i < start_idx; i++)
-		if (unlikely(node[i]))
+		if (unlikely(PM_READ(node[i]))) /*PM_READ*/
 			return false;
 	for (i = end_idx + 1; i <= last_idx; i++)
-		if (unlikely(node[i]))
+		if (unlikely(PM_READ(node[i]))) /*PM_READ*/
 			return false;
 	return true;
 }
@@ -266,10 +266,10 @@ static int recursive_truncate_blocks(struct super_block *sb, __le64 block,
 		struct pmfs_blocknode *start_hint = NULL;
 		mutex_lock(&sbi->s_lock);
 		for (i = first_index; i <= last_index; i++) {
-			if (unlikely(!node[i]))
+			if (unlikely(!PM_READ(node[i])))
 				continue;
 			/* Freeing the data block */
-			blocknr = pmfs_get_blocknr(sb, le64_to_cpu(node[i]),
+			blocknr = pmfs_get_blocknr(sb, le64_to_cpu(PM_READ(node[i])),
 				    btype);
 			__pmfs_free_block(sb, blocknr, btype, &start_hint);
 			freed++;
@@ -277,7 +277,7 @@ static int recursive_truncate_blocks(struct super_block *sb, __le64 block,
 		mutex_unlock(&sbi->s_lock);
 	} else {
 		for (i = first_index; i <= last_index; i++) {
-			if (unlikely(!node[i]))
+			if (unlikely(!PM_READ(node[i])))
 				continue;
 			first_blk = (i == first_index) ? (first_blocknr &
 				((1 << node_bits) - 1)) : 0;
@@ -285,13 +285,13 @@ static int recursive_truncate_blocks(struct super_block *sb, __le64 block,
 			last_blk = (i == last_index) ? (last_blocknr &
 				((1 << node_bits) - 1)) : (1 << node_bits) - 1;
 
-			freed += recursive_truncate_blocks(sb, node[i],
+			freed += recursive_truncate_blocks(sb, PM_READ(node[i]),
 				height - 1, btype, first_blk, last_blk, &mpty);
 			/* cond_resched(); */
 			if (mpty) {
 				/* Freeing the meta-data block */
 				blocknr = pmfs_get_blocknr(sb, le64_to_cpu(
-					    node[i]), PMFS_BLOCK_TYPE_4K);
+					    PM_READ(node[i])), PMFS_BLOCK_TYPE_4K);
 				pmfs_free_block(sb, blocknr,PMFS_BLOCK_TYPE_4K);
 			} else {
 				if (i == first_index)
@@ -310,7 +310,7 @@ static int recursive_truncate_blocks(struct super_block *sb, __le64 block,
 		if (start <= end) {
 			bzero = (end - start + 1) * sizeof(u64);
 			pmfs_memunlock_block(sb, node);
-			memset(&node[start], 0, bzero);
+			PM_MEMSET(&node[start], 0, bzero);
 			pmfs_memlock_block(sb, node);
 			pmfs_flush_buffer(&node[start], bzero, false);
 		}
@@ -498,9 +498,9 @@ static void __pmfs_truncate_blocks(struct inode *inode, loff_t start,
 				sb->s_blocksize_bits)));
 
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_blocks = cpu_to_le64(inode->i_blocks);
-	pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
-	pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
+	PM_EQU(pi->i_blocks, cpu_to_le64(inode->i_blocks));
+	PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
+	PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
 	pmfs_decrease_btree_height(sb, pi, start, root);
 	/* Check for the flag EOFBLOCKS is still valid after the set size */
 	check_eof_blocks(sb, pi, inode->i_size);
@@ -511,8 +511,8 @@ static void __pmfs_truncate_blocks(struct inode *inode, loff_t start,
 end_truncate_blocks:
 	/* we still need to update ctime and mtime */
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
-	pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
+	PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
+	PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
 	pmfs_memlock_inode(sb, pi);
 	pmfs_flush_buffer(pi, 1, false);
 }
@@ -521,8 +521,8 @@ end_truncate_blocks:
 static int pmfs_increase_btree_height(struct super_block *sb,
 		struct pmfs_inode *pi, u32 new_height)
 {
-	u32 height = pi->height;
-	__le64 *root, prev_root = pi->root;
+	u32 height = PM_READ(pi->height);
+	__le64 *root, prev_root = PM_READ(pi->root);
 	unsigned long blocknr;
 	int errval = 0;
 
@@ -537,15 +537,15 @@ static int pmfs_increase_btree_height(struct super_block *sb,
 		blocknr = pmfs_get_block_off(sb, blocknr, PMFS_BLOCK_TYPE_4K);
 		root = pmfs_get_block(sb, blocknr);
 		pmfs_memunlock_block(sb, root);
-		root[0] = prev_root;
+		PM_EQU(root[0], prev_root); // root[0] = prev_root; PM_WRITE
 		pmfs_memlock_block(sb, root);
 		pmfs_flush_buffer(root, sizeof(*root), false);
 		prev_root = cpu_to_le64(blocknr);
 		height++;
 	}
 	pmfs_memunlock_inode(sb, pi);
-	pi->root = prev_root;
-	pi->height = height;
+	PM_EQU(pi->root, prev_root); // pi->root = prev_root; PM_WRITE
+	PM_EQU(pi->height, height); // pi->height = height; PM_WRITE
 	pmfs_memlock_inode(sb, pi);
 	return errval;
 }
@@ -581,7 +581,7 @@ static int recursive_alloc_blocks(pmfs_transaction_t *trans,
 
 	for (i = first_index; i <= last_index; i++) {
 		if (height == 1) {
-			if (node[i] == 0) {
+			if (PM_READ(node[i]) == 0) {
 				errval = pmfs_new_data_block(sb, pi, &blocknr,
 							zero);
 				if (errval) {
@@ -589,8 +589,8 @@ static int recursive_alloc_blocks(pmfs_transaction_t *trans,
 						" %d\n", errval);
 					/* For later recovery in truncate... */
 					pmfs_memunlock_inode(sb, pi);
-					pi->i_flags |= cpu_to_le32(
-							PMFS_EOFBLOCKS_FL);
+					PM_OR_EQU(pi->i_flags, cpu_to_le32(
+							PMFS_EOFBLOCKS_FL));
 					pmfs_memlock_inode(sb, pi);
 					return errval;
 				}
@@ -603,12 +603,12 @@ static int recursive_alloc_blocks(pmfs_transaction_t *trans,
 					journal_saved = 1;
 				}
 				pmfs_memunlock_block(sb, node);
-				node[i] = cpu_to_le64(pmfs_get_block_off(sb,
-						blocknr, pi->i_blk_type));
+				PM_EQU(node[i], cpu_to_le64(pmfs_get_block_off(sb,
+						blocknr, PM_READ(pi->i_blk_type))));
 				pmfs_memlock_block(sb, node);
 			}
 		} else {
-			if (node[i] == 0) {
+			if (PM_READ(node[i]) == 0) {
 				/* allocate the meta block */
 				errval = pmfs_new_block(sb, &blocknr,
 						PMFS_BLOCK_TYPE_4K, 1);
@@ -626,8 +626,8 @@ static int recursive_alloc_blocks(pmfs_transaction_t *trans,
 					journal_saved = 1;
 				}
 				pmfs_memunlock_block(sb, node);
-				node[i] = cpu_to_le64(pmfs_get_block_off(sb,
-					    blocknr, PMFS_BLOCK_TYPE_4K));
+				PM_EQU(node[i], cpu_to_le64(pmfs_get_block_off(sb,
+					    blocknr, PMFS_BLOCK_TYPE_4K)));
 				pmfs_memlock_block(sb, node);
 				new_node = 1;
 			}
@@ -638,7 +638,7 @@ static int recursive_alloc_blocks(pmfs_transaction_t *trans,
 			last_blk = (i == last_index) ? (last_blocknr &
 				((1 << node_bits) - 1)) : (1 << node_bits) - 1;
 
-			errval = recursive_alloc_blocks(trans, sb, pi, node[i],
+			errval = recursive_alloc_blocks(trans, sb, pi, PM_READ(node[i]),
 			height - 1, first_blk, last_blk, new_node, zero);
 			if (errval < 0)
 				goto fail;
@@ -662,7 +662,7 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 	int errval;
 	unsigned long max_blocks;
 	unsigned int height;
-	unsigned int data_bits = blk_type_to_shift[pi->i_blk_type];
+	unsigned int data_bits = blk_type_to_shift[PM_READ(pi->i_blk_type)];
 	unsigned int blk_shift, meta_bits = META_BLK_SHIFT;
 	unsigned long blocknr, first_blocknr, last_blocknr, total_blocks;
 	/* convert the 4K blocks into the actual blocks the inode is using */
@@ -675,7 +675,7 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 		   "first blocknr 0x%lx, last_blocknr 0x%lx\n",
 		   pi->height, file_blocknr, num, first_blocknr, last_blocknr);
 
-	height = pi->height;
+	height = PM_READ(pi->height);
 
 	blk_shift = height * meta_bits;
 
@@ -696,7 +696,7 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 		}
 	}
 
-	if (!pi->root) {
+	if (!PM_READ(pi->root)) {
 		if (height == 0) {
 			__le64 root;
 			errval = pmfs_new_data_block(sb, pi, &blocknr, zero);
@@ -706,10 +706,10 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 				goto fail;
 			}
 			root = cpu_to_le64(pmfs_get_block_off(sb, blocknr,
-					   pi->i_blk_type));
+					   PM_READ(pi->i_blk_type)));
 			pmfs_memunlock_inode(sb, pi);
-			pi->root = root;
-			pi->height = height;
+			PM_EQU(pi->root, root); // pi->root = root; PM_WRITE
+			PM_EQU(pi->height, height); // pi->height = height; PM_WRITE
 			pmfs_memlock_inode(sb, pi);
 		} else {
 			errval = pmfs_increase_btree_height(sb, pi, height);
@@ -718,8 +718,8 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 					" height\n", __func__, __LINE__);
 				goto fail;
 			}
-			errval = recursive_alloc_blocks(trans, sb, pi, pi->root,
-			pi->height, first_blocknr, last_blocknr, 1, zero);
+			errval = recursive_alloc_blocks(trans, sb, pi, PM_READ(pi->root),
+			PM_READ(pi->height), first_blocknr, last_blocknr, 1, zero);
 			if (errval < 0)
 				goto fail;
 		}
@@ -728,7 +728,7 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 		if (height == 0)
 			return 0;
 
-		if (height > pi->height) {
+		if (height > PM_READ(pi->height)) {
 			errval = pmfs_increase_btree_height(sb, pi, height);
 			if (errval) {
 				pmfs_dbg_verbose("Err: inc height %x:%x tot %lx"
@@ -736,7 +736,7 @@ int __pmfs_alloc_blocks(pmfs_transaction_t *trans, struct super_block *sb,
 				goto fail;
 			}
 		}
-		errval = recursive_alloc_blocks(trans, sb, pi, pi->root, height,
+		errval = recursive_alloc_blocks(trans, sb, pi, PM_READ(pi->root), height,
 				first_blocknr, last_blocknr, 0, zero);
 		if (errval < 0)
 			goto fail;
@@ -758,7 +758,7 @@ inline int pmfs_alloc_blocks(pmfs_transaction_t *trans, struct inode *inode,
 	int errval;
 
 	errval = __pmfs_alloc_blocks(trans, sb, pi, file_blocknr, num, zero);
-	inode->i_blocks = le64_to_cpu(pi->i_blocks);
+	inode->i_blocks = le64_to_cpu(PM_READ(pi->i_blocks));
 
 	return errval;
 }
@@ -783,22 +783,22 @@ int pmfs_init_inode_table(struct super_block *sb)
 	}
 
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_mode = 0;
-	pi->i_uid = 0;
-	pi->i_gid = 0;
-	pi->i_links_count = cpu_to_le16(1);
-	pi->i_flags = 0;
-	pi->height = 0;
-	pi->i_dtime = 0;
+	PM_EQU(pi->i_mode, 0);
+	PM_EQU(pi->i_uid, 0);
+	PM_EQU(pi->i_gid, 0);
+	PM_EQU(pi->i_links_count, cpu_to_le16(1));
+	PM_EQU(pi->i_flags, 0);
+	PM_EQU(pi->height, 0);
+	PM_EQU(pi->i_dtime, 0);
 	if (init_inode_table_size >= PMFS_LARGE_INODE_TABLE_SIZE)
-		pi->i_blk_type = PMFS_BLOCK_TYPE_2M;
+		PM_EQU(pi->i_blk_type, PMFS_BLOCK_TYPE_2M);
 	else
-		pi->i_blk_type = PMFS_BLOCK_TYPE_4K;
+		PM_EQU(pi->i_blk_type, PMFS_BLOCK_TYPE_4K);
 
 	num_blocks = (init_inode_table_size + pmfs_inode_blk_size(pi) - 1) >>
 				pmfs_inode_blk_shift(pi);
 
-	pi->i_size = cpu_to_le64(num_blocks << pmfs_inode_blk_shift(pi));
+	PM_EQU(pi->i_size, cpu_to_le64(num_blocks << pmfs_inode_blk_shift(pi)));
 	/* pmfs_sync_inode(pi); */
 	pmfs_memlock_inode(sb, pi);
 
@@ -834,28 +834,28 @@ static int pmfs_read_inode(struct inode *inode, struct pmfs_inode *pi)
 	}
 #endif
 
-	inode->i_mode = le16_to_cpu(pi->i_mode);
-	i_uid_write(inode, le32_to_cpu(pi->i_uid));
-	i_gid_write(inode, le32_to_cpu(pi->i_gid));
-	set_nlink(inode, le16_to_cpu(pi->i_links_count));
-	inode->i_size = le64_to_cpu(pi->i_size);
-	inode->i_atime.tv_sec = le32_to_cpu(pi->i_atime);
-	inode->i_ctime.tv_sec = le32_to_cpu(pi->i_ctime);
-	inode->i_mtime.tv_sec = le32_to_cpu(pi->i_mtime);
+	inode->i_mode = le16_to_cpu(PM_READ(pi->i_mode));
+	i_uid_write(inode, le32_to_cpu(PM_READ(pi->i_uid)));
+	i_gid_write(inode, le32_to_cpu(PM_READ(pi->i_gid)));
+	set_nlink(inode, le16_to_cpu(PM_READ(pi->i_links_count)));
+	inode->i_size = le64_to_cpu(PM_READ(pi->i_size));
+	inode->i_atime.tv_sec = le32_to_cpu(PM_READ(pi->i_atime));
+	inode->i_ctime.tv_sec = le32_to_cpu(PM_READ(pi->i_ctime));
+	inode->i_mtime.tv_sec = le32_to_cpu(PM_READ(pi->i_mtime));
 	inode->i_atime.tv_nsec = inode->i_mtime.tv_nsec =
 					 inode->i_ctime.tv_nsec = 0;
-	inode->i_generation = le32_to_cpu(pi->i_generation);
+	inode->i_generation = le32_to_cpu(PM_READ(pi->i_generation));
 	pmfs_set_inode_flags(inode, pi);
 
 	/* check if the inode is active. */
 	if (inode->i_nlink == 0 &&
-	   (inode->i_mode == 0 || le32_to_cpu(pi->i_dtime))) {
+	   (inode->i_mode == 0 || le32_to_cpu(PM_READ(pi->i_dtime)))) {
 		/* this inode is deleted */
 		ret = -ESTALE;
 		goto bad_inode;
 	}
 
-	inode->i_blocks = le64_to_cpu(pi->i_blocks);
+	inode->i_blocks = le64_to_cpu(PM_READ(pi->i_blocks));
 	inode->i_mapping->a_ops = &pmfs_aops_xip;
 	inode->i_mapping->backing_dev_info = &pmfs_backing_dev_info;
 
@@ -875,7 +875,7 @@ static int pmfs_read_inode(struct inode *inode, struct pmfs_inode *pi)
 		inode->i_size = 0;
 		inode->i_op = &pmfs_special_inode_operations;
 		init_special_inode(inode, inode->i_mode,
-				   le32_to_cpu(pi->dev.rdev));
+				   le32_to_cpu(PM_READ(pi->dev.rdev)));
 		break;
 	}
 
@@ -889,20 +889,20 @@ bad_inode:
 static void pmfs_update_inode(struct inode *inode, struct pmfs_inode *pi)
 {
 	pmfs_memunlock_inode(inode->i_sb, pi);
-	pi->i_mode = cpu_to_le16(inode->i_mode);
-	pi->i_uid = cpu_to_le32(i_uid_read(inode));
-	pi->i_gid = cpu_to_le32(i_gid_read(inode));
-	pi->i_links_count = cpu_to_le16(inode->i_nlink);
-	pi->i_size = cpu_to_le64(inode->i_size);
-	pi->i_blocks = cpu_to_le64(inode->i_blocks);
-	pi->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
-	pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
-	pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
-	pi->i_generation = cpu_to_le32(inode->i_generation);
+	PM_EQU(pi->i_mode, cpu_to_le16(inode->i_mode));
+	PM_EQU(pi->i_uid, cpu_to_le32(i_uid_read(inode)));
+	PM_EQU(pi->i_gid, cpu_to_le32(i_gid_read(inode)));
+	PM_EQU(pi->i_links_count, cpu_to_le16(inode->i_nlink));
+	PM_EQU(pi->i_size, cpu_to_le64(inode->i_size));
+	PM_EQU(pi->i_blocks, cpu_to_le64(inode->i_blocks));
+	PM_EQU(pi->i_atime, cpu_to_le32(inode->i_atime.tv_sec));
+	PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
+	PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
+	PM_EQU(pi->i_generation, cpu_to_le32(inode->i_generation));
 	pmfs_get_inode_flags(inode, pi);
 
 	if (S_ISCHR(inode->i_mode) || S_ISBLK(inode->i_mode))
-		pi->dev.rdev = cpu_to_le32(inode->i_rdev);
+		PM_EQU(pi->dev.rdev, cpu_to_le32(inode->i_rdev));
 
 	pmfs_memlock_inode(inode->i_sb, pi);
 }
@@ -942,11 +942,11 @@ static int pmfs_free_inode(struct inode *inode)
 	pmfs_add_logentry(sb, trans, pi, MAX_DATA_PER_LENTRY, LE_DATA);
 
 	pmfs_memunlock_inode(sb, pi);
-	pi->root = 0;
+	PM_EQU(pi->root, 0); // pi->root = 0; PM_WRITE
 	/* pi->i_links_count = 0;
 	pi->i_xattr = 0; */
-	pi->i_size = 0;
-	pi->i_dtime = cpu_to_le32(get_seconds());
+	PM_EQU(pi->i_size, 0); // pi->i_size = 0; PM_WRITE
+	PM_EQU(pi->i_dtime, cpu_to_le32(get_seconds())); // pi->i_dtime = cpu_to_le32(get_seconds()); PM_WRITE
 	pmfs_memlock_inode(sb, pi);
 
 	pmfs_commit_transaction(sb, trans);
@@ -1017,12 +1017,12 @@ void pmfs_evict_inode(struct inode *inode)
 		if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
 			goto out;
 
-		root = pi->root;
-		height = pi->height;
-		btype = pi->i_blk_type;
+		root = PM_READ(pi->root);
+		height = PM_READ(pi->height);
+		btype = PM_READ(pi->i_blk_type);
 
-		if (pi->i_flags & cpu_to_le32(PMFS_EOFBLOCKS_FL)) {
-			last_blocknr = (1UL << (pi->height * META_BLK_SHIFT))
+		if (PM_READ(pi->i_flags) & cpu_to_le32(PMFS_EOFBLOCKS_FL)) {
+			last_blocknr = (1UL << (PM_READ(pi->height) * META_BLK_SHIFT))
 			    - 1;
 		} else {
 			if (likely(inode->i_size))
@@ -1030,12 +1030,12 @@ void pmfs_evict_inode(struct inode *inode)
 					pmfs_inode_blk_shift(pi);
 			else
 				last_blocknr = 0;
-			last_blocknr = pmfs_sparse_last_blocknr(pi->height,
+			last_blocknr = pmfs_sparse_last_blocknr(PM_READ(pi->height),
 				last_blocknr);
 		}
 
 		/* first free the inode */
-		err = pmfs_free_inode(inode);
+		err = pmfs_free_inode(inode); /* PM_WRITE in this routine */
 		if (err)
 			goto out;
 		pi = NULL; /* we no longer own the pmfs_inode */
@@ -1070,20 +1070,20 @@ static int pmfs_increase_inode_table_size(struct super_block *sb)
 	pmfs_add_logentry(sb, trans, pi, MAX_DATA_PER_LENTRY, LE_DATA);
 
 	errval = __pmfs_alloc_blocks(trans, sb, pi,
-			le64_to_cpup(&pi->i_size) >> sb->s_blocksize_bits,
+			le64_to_cpup(PM_READ_P(pi->i_size)) >> sb->s_blocksize_bits,
 			1, true);
 
 	if (errval == 0) {
-		u64 i_size = le64_to_cpu(pi->i_size);
+		u64 i_size = le64_to_cpu(PM_READ(pi->i_size));
 
 		sbi->s_free_inode_hint = i_size >> PMFS_INODE_BITS;
 		i_size += pmfs_inode_blk_size(pi);
 
 		pmfs_memunlock_inode(sb, pi);
-		pi->i_size = cpu_to_le64(i_size);
+		PM_EQU(pi->i_size, cpu_to_le64(i_size)); // pi->i_size = cpu_to_le64(i_size); PM_WRITE
 		pmfs_memlock_inode(sb, pi);
 
-		sbi->s_free_inodes_count += INODES_PER_BLOCK(pi->i_blk_type);
+		sbi->s_free_inodes_count += INODES_PER_BLOCK(PM_READ(pi->i_blk_type));
 		sbi->s_inodes_count = i_size >> PMFS_INODE_BITS;
 	} else
 		pmfs_dbg_verbose("no space left to inc inode table!\n");
@@ -1130,7 +1130,7 @@ struct inode *pmfs_new_inode(pmfs_transaction_t *trans, struct inode *dir,
 
 	/* find the oldest unused pmfs inode */
 	i = (sbi->s_free_inode_hint);
-	inodes_per_block = INODES_PER_BLOCK(inode_table->i_blk_type);
+	inodes_per_block = INODES_PER_BLOCK(PM_READ(inode_table->i_blk_type));
 retry:
 	num_inodes = (sbi->s_inodes_count);
 	while (i < num_inodes) {
@@ -1140,9 +1140,9 @@ retry:
 		pi = pmfs_get_inode(sb, ino);
 		for (; i < end_ino; i++) {
 			/* check if the inode is active. */
-			if (le16_to_cpu(pi->i_links_count) == 0 &&
-			(le16_to_cpu(pi->i_mode) == 0 ||
-			 le32_to_cpu(pi->i_dtime)))
+			if (le16_to_cpu(PM_READ(pi->i_links_count)) == 0 &&
+			(le16_to_cpu(PM_READ(pi->i_mode)) == 0 ||
+			 le32_to_cpu(PM_READ(pi->i_dtime))))
 				/* this inode is free */
 				break;
 			pi = (struct pmfs_inode *)((void *)pi +
@@ -1169,10 +1169,10 @@ retry:
 	pmfs_add_logentry(sb, trans, pi, sizeof(*pi), LE_DATA);
 
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_blk_type = PMFS_DEFAULT_BLOCK_TYPE;
-	pi->i_flags = pmfs_mask_flags(mode, diri->i_flags);
-	pi->height = 0;
-	pi->i_dtime = 0;
+	PM_EQU(pi->i_blk_type, PMFS_DEFAULT_BLOCK_TYPE);
+	PM_EQU(pi->i_flags, pmfs_mask_flags(mode, diri->i_flags));
+	PM_EQU(pi->height, 0);
+	PM_EQU(pi->i_dtime, 0);
 	pmfs_memlock_inode(sb, pi);
 
 	sbi->s_free_inodes_count -= 1;
@@ -1204,22 +1204,22 @@ fail1:
 inline void pmfs_update_nlink(struct inode *inode, struct pmfs_inode *pi)
 {
 	pmfs_memunlock_inode(inode->i_sb, pi);
-	pi->i_links_count = cpu_to_le16(inode->i_nlink);
+	PM_EQU(pi->i_links_count, cpu_to_le16(inode->i_nlink));
 	pmfs_memlock_inode(inode->i_sb, pi);
 }
 
 inline void pmfs_update_isize(struct inode *inode, struct pmfs_inode *pi)
 {
 	pmfs_memunlock_inode(inode->i_sb, pi);
-	pi->i_size = cpu_to_le64(inode->i_size);
+	PM_EQU(pi->i_size, cpu_to_le64(inode->i_size));
 	pmfs_memlock_inode(inode->i_sb, pi);
 }
 
 inline void pmfs_update_time(struct inode *inode, struct pmfs_inode *pi)
 {
 	pmfs_memunlock_inode(inode->i_sb, pi);
-	pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
-	pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
+	PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
+	PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
 	pmfs_memlock_inode(inode->i_sb, pi);
 }
 
@@ -1261,7 +1261,7 @@ void pmfs_dirty_inode(struct inode *inode, int flags)
 	/* only i_atime should have changed if at all.
 	 * we can do in-place atomic update */
 	pmfs_memunlock_inode(sb, pi);
-	pi->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
+	PM_EQU(pi->i_atime, cpu_to_le32(inode->i_atime.tv_sec));
 	pmfs_memlock_inode(sb, pi);
 	pmfs_flush_buffer(&pi->i_atime, sizeof(pi->i_atime), true);
 
@@ -1300,7 +1300,7 @@ static void pmfs_block_truncate_page(struct inode *inode, loff_t newsize)
 	if (!bp)
 		return;
 	pmfs_memunlock_block(sb, bp);
-	memset(bp + offset, 0, length);
+	PM_MEMSET(bp + offset, 0, length);
 	pmfs_memlock_block(sb, bp);
 	pmfs_flush_buffer(bp + offset, length, false);
 }
@@ -1324,7 +1324,7 @@ void pmfs_truncate_del(struct inode *inode)
 
 	li = pmfs_get_truncate_item(sb, inode->i_ino);
 
-	ino_next = le64_to_cpu(li->i_next_truncate);
+	ino_next = le64_to_cpu(PM_READ(li->i_next_truncate));
 	prev = si->i_truncated.prev;
 
 	list_del_init(&si->i_truncated);
@@ -1333,7 +1333,7 @@ void pmfs_truncate_del(struct inode *inode)
 	/* Atomically delete the inode from the truncate list */
 	if (prev == &sbi->s_truncate) {
 		pmfs_memunlock_range(sb, head, sizeof(*head));
-		head->i_next_truncate = cpu_to_le64(ino_next);
+		PM_EQU(head->i_next_truncate, cpu_to_le64(ino_next));
 		pmfs_memlock_range(sb, head, sizeof(*head));
 		pmfs_flush_buffer(&head->i_next_truncate,
 			sizeof(head->i_next_truncate), false);
@@ -1343,7 +1343,7 @@ void pmfs_truncate_del(struct inode *inode)
 		struct pmfs_inode_truncate_item *li_prv = 
 				pmfs_get_truncate_item(sb, i_prv->i_ino);
 		pmfs_memunlock_range(sb, li_prv, sizeof(*li_prv));
-		li_prv->i_next_truncate = cpu_to_le64(ino_next);
+		PM_EQU(li_prv->i_next_truncate, cpu_to_le64(ino_next));
 		pmfs_memlock_range(sb, li_prv, sizeof(*li_prv));
 		pmfs_flush_buffer(&li_prv->i_next_truncate,
 			sizeof(li_prv->i_next_truncate), false);
@@ -1384,8 +1384,8 @@ void pmfs_truncate_add(struct inode *inode, u64 truncate_size)
 	li = pmfs_get_truncate_item(sb, inode->i_ino);
 
 	pmfs_memunlock_range(sb, li, sizeof(*li));
-	li->i_next_truncate = head->i_next_truncate;
-	li->i_truncatesize = cpu_to_le64(truncate_size);
+	PM_EQU(li->i_next_truncate, PM_READ(head->i_next_truncate));
+	PM_EQU(li->i_truncatesize, cpu_to_le64(truncate_size));
 	pmfs_memlock_range(sb, li, sizeof(*li));
 	pmfs_flush_buffer(li, sizeof(*li), false);
 	/* make sure above is persistent before changing the head pointer */
@@ -1393,7 +1393,7 @@ void pmfs_truncate_add(struct inode *inode, u64 truncate_size)
 	PERSISTENT_BARRIER();
 	/* Atomically insert this inode at the head of the truncate list. */
 	pmfs_memunlock_range(sb, head, sizeof(*head));
-	head->i_next_truncate = cpu_to_le64(inode->i_ino);
+	PM_EQU(head->i_next_truncate, cpu_to_le64(inode->i_ino));
 	pmfs_memlock_range(sb, head, sizeof(*head));
 	pmfs_flush_buffer(&head->i_next_truncate,
 		sizeof(head->i_next_truncate), false);
@@ -1457,25 +1457,25 @@ static int pmfs_update_single_field(struct super_block *sb, struct inode *inode,
 	pmfs_memunlock_inode(sb, pi);
 	switch (ia_valid) {
 		case ATTR_MODE:
-			pi->i_mode = cpu_to_le16(inode->i_mode);
+			PM_EQU(pi->i_mode, cpu_to_le16(inode->i_mode));
 			break;
 		case ATTR_UID:
-			pi->i_uid = cpu_to_le32(i_uid_read(inode));
+			PM_EQU(pi->i_uid, cpu_to_le32(i_uid_read(inode)));
 			break;
 		case ATTR_GID:
-			pi->i_gid = cpu_to_le32(i_gid_read(inode));
+			PM_EQU(pi->i_gid, cpu_to_le32(i_gid_read(inode)));
 			break;
 		case ATTR_SIZE:
-			pi->i_size = cpu_to_le64(inode->i_size);
+			PM_EQU(pi->i_size, cpu_to_le64(inode->i_size));
 			break;
 		case ATTR_ATIME:
-			pi->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
+			PM_EQU(pi->i_atime, cpu_to_le32(inode->i_atime.tv_sec));
 			break;
 		case ATTR_CTIME:
-			pi->i_ctime = cpu_to_le32(inode->i_ctime.tv_sec);
+			PM_EQU(pi->i_ctime, cpu_to_le32(inode->i_ctime.tv_sec));
 			break;
 		case ATTR_MTIME:
-			pi->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
+			PM_EQU(pi->i_mtime, cpu_to_le32(inode->i_mtime.tv_sec));
 			break;
 	}
 	pmfs_memlock_inode(sb, pi);
@@ -1549,7 +1549,7 @@ int pmfs_notify_change(struct dentry *dentry, struct iattr *attr)
 
 void pmfs_set_inode_flags(struct inode *inode, struct pmfs_inode *pi)
 {
-	unsigned int flags = le32_to_cpu(pi->i_flags);
+	unsigned int flags = le32_to_cpu(PM_READ(pi->i_flags));
 
 	inode->i_flags &=
 		~(S_SYNC | S_APPEND | S_IMMUTABLE | S_NOATIME | S_DIRSYNC);
@@ -1563,14 +1563,14 @@ void pmfs_set_inode_flags(struct inode *inode, struct pmfs_inode *pi)
 		inode->i_flags |= S_NOATIME;
 	if (flags & FS_DIRSYNC_FL)
 		inode->i_flags |= S_DIRSYNC;
-	if (!pi->i_xattr)
+	if (!PM_READ(pi->i_xattr))
 		inode_has_no_xattr(inode);
 }
 
 void pmfs_get_inode_flags(struct inode *inode, struct pmfs_inode *pi)
 {
 	unsigned int flags = inode->i_flags;
-	unsigned int pmfs_flags = le32_to_cpu(pi->i_flags);
+	unsigned int pmfs_flags = le32_to_cpu(PM_READ(pi->i_flags));
 
 	pmfs_flags &= ~(FS_SYNC_FL | FS_APPEND_FL | FS_IMMUTABLE_FL |
 			 FS_NOATIME_FL | FS_DIRSYNC_FL);
@@ -1585,7 +1585,7 @@ void pmfs_get_inode_flags(struct inode *inode, struct pmfs_inode *pi)
 	if (flags & S_DIRSYNC)
 		pmfs_flags |= FS_DIRSYNC_FL;
 
-	pi->i_flags = cpu_to_le32(pmfs_flags);
+	PM_EQU(pi->i_flags, cpu_to_le32(pmfs_flags)); // pi->i_flags = cpu_to_le32(pmfs_flags); PM_WRITE
 }
 
 static ssize_t pmfs_direct_IO(int rw, struct kiocb *iocb,

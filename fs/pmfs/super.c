@@ -41,6 +41,7 @@ static struct kmem_cache *pmfs_blocknode_cachep;
 static struct kmem_cache *pmfs_transaction_cachep;
 /* FIXME: should the following variable be one per PMFS instance? */
 unsigned int pmfs_dbgmask = 0;
+unsigned int pmfs_tracemask = 0;
 
 #ifdef CONFIG_PMFS_TEST
 static void *first_pmfs_super;
@@ -154,7 +155,7 @@ enum {
 	Opt_num_inodes, Opt_mode, Opt_uid,
 	Opt_gid, Opt_blocksize, Opt_wprotect, Opt_wprotectold,
 	Opt_err_cont, Opt_err_panic, Opt_err_ro,
-	Opt_hugemmap, Opt_nohugeioremap, Opt_dbgmask, Opt_err
+	Opt_hugemmap, Opt_nohugeioremap, Opt_dbgmask, Opt_tracemask, Opt_err,
 };
 
 static const match_table_t tokens = {
@@ -174,6 +175,7 @@ static const match_table_t tokens = {
 	{ Opt_hugemmap,	     "hugemmap"		  },
 	{ Opt_nohugeioremap, "nohugeioremap"	  },
 	{ Opt_dbgmask,	     "dbgmask=%u"	  },
+	{ Opt_tracemask,     "tracemask=%u"	  },
 	{ Opt_err,	     NULL		  },
 };
 
@@ -325,6 +327,11 @@ static int pmfs_parse_options(char *options, struct pmfs_sb_info *sbi,
 				goto bad_val;
 			pmfs_dbgmask = option;
 			break;
+		case Opt_tracemask:
+			if(match_int(&args[0], &option))
+				goto bad_val;
+			pmfs_tracemask = option;
+            break;
 		default: {
 			goto bad_opt;
 		}
@@ -377,7 +384,7 @@ static struct pmfs_inode *pmfs_init(struct super_block *sb,
 	struct pmfs_sb_info *sbi = PMFS_SB(sb);
 	struct pmfs_direntry *de;
 	unsigned long blocknr;
-
+    __le32 __time;
 	pmfs_info("creating an empty pmfs of size %lu\n", size);
 	sbi->virt_addr = pmfs_ioremap(sb, sbi->phys_addr, size);
 	sbi->block_start = (unsigned long)0;
@@ -437,11 +444,11 @@ static struct pmfs_inode *pmfs_init(struct super_block *sb,
 
 	/* clear out super-block and inode table */
 	memset_nt(super, 0, journal_data_start);
-	super->s_size = cpu_to_le64(size);
-	super->s_blocksize = cpu_to_le32(blocksize);
-	super->s_magic = cpu_to_le16(PMFS_SUPER_MAGIC);
-	super->s_journal_offset = cpu_to_le64(journal_meta_start);
-	super->s_inode_table_offset = cpu_to_le64(inode_table_start);
+	PM_EQU(super->s_size, cpu_to_le64(size));
+	PM_EQU(super->s_blocksize, cpu_to_le32(blocksize));
+	PM_EQU(super->s_magic, cpu_to_le16(PMFS_SUPER_MAGIC));
+	PM_EQU(super->s_journal_offset, cpu_to_le64(journal_meta_start));
+	PM_EQU(super->s_inode_table_offset, cpu_to_le64(inode_table_start));
 
 	pmfs_init_blockmap(sb, journal_data_start + sbi->jsize);
 	pmfs_memlock_range(sb, super, journal_data_start);
@@ -466,19 +473,19 @@ static struct pmfs_inode *pmfs_init(struct super_block *sb,
 	root_i = pmfs_get_inode(sb, PMFS_ROOT_INO);
 
 	pmfs_memunlock_inode(sb, root_i);
-	root_i->i_mode = cpu_to_le16(sbi->mode | S_IFDIR);
-	root_i->i_uid = cpu_to_le32(from_kuid(&init_user_ns, sbi->uid));
-	root_i->i_gid = cpu_to_le32(from_kgid(&init_user_ns, sbi->gid));
-	root_i->i_links_count = cpu_to_le16(2);
-	root_i->i_blk_type = PMFS_BLOCK_TYPE_4K;
-	root_i->i_flags = 0;
-	root_i->i_blocks = cpu_to_le64(1);
-	root_i->i_size = cpu_to_le64(sb->s_blocksize);
-	root_i->i_atime = root_i->i_mtime = root_i->i_ctime =
-		cpu_to_le32(get_seconds());
-	root_i->root = cpu_to_le64(pmfs_get_block_off(sb, blocknr,
-						       PMFS_BLOCK_TYPE_4K));
-	root_i->height = 0;
+	PM_EQU(root_i->i_mode, cpu_to_le16(sbi->mode | S_IFDIR));
+	PM_EQU(root_i->i_uid , cpu_to_le32(from_kuid(&init_user_ns, sbi->uid)));
+	PM_EQU(root_i->i_gid , cpu_to_le32(from_kgid(&init_user_ns, sbi->gid)));
+	PM_EQU(root_i->i_links_count , cpu_to_le16(2));
+	PM_EQU(root_i->i_blk_type , PMFS_BLOCK_TYPE_4K);
+	PM_EQU(root_i->i_flags , 0);
+	PM_EQU(root_i->i_blocks , cpu_to_le64(1));
+	PM_EQU(root_i->i_size , cpu_to_le64(sb->s_blocksize));
+	__time = cpu_to_le32(get_seconds()); PM_EQU(root_i->i_atime, __time); PM_EQU(root_i->i_mtime, __time); PM_EQU(root_i->i_ctime, __time);
+	//	cpu_to_le32(get_seconds());
+	PM_EQU(root_i->root , cpu_to_le64(pmfs_get_block_off(sb, blocknr,
+						       PMFS_BLOCK_TYPE_4K)));
+	PM_EQU(root_i->height , 0);
 	/* pmfs_sync_inode(root_i); */
 	pmfs_memlock_inode(sb, root_i);
 	pmfs_flush_buffer(root_i, sizeof(*root_i), false);
@@ -486,15 +493,15 @@ static struct pmfs_inode *pmfs_init(struct super_block *sb,
 		pmfs_get_block(sb, pmfs_get_block_off(sb, blocknr, PMFS_BLOCK_TYPE_4K));
 
 	pmfs_memunlock_range(sb, de, sb->s_blocksize);
-	de->ino = cpu_to_le64(PMFS_ROOT_INO);
-	de->name_len = 1;
-	de->de_len = cpu_to_le16(PMFS_DIR_REC_LEN(de->name_len));
-	strcpy(de->name, ".");
+	PM_EQU(de->ino, cpu_to_le64(PMFS_ROOT_INO));
+	PM_EQU(de->name_len, 1);
+	PM_EQU(de->de_len, cpu_to_le16(PMFS_DIR_REC_LEN(de->name_len)));
+	PM_STRCPY(de->name, ".");// strcpy(de->name, ".");
 	de = (struct pmfs_direntry *)((char *)de + le16_to_cpu(de->de_len));
-	de->ino = cpu_to_le64(PMFS_ROOT_INO);
-	de->de_len = cpu_to_le16(sb->s_blocksize - PMFS_DIR_REC_LEN(1));
-	de->name_len = 2;
-	strcpy(de->name, "..");
+	PM_EQU(de->ino, cpu_to_le64(PMFS_ROOT_INO));
+	PM_EQU(de->de_len, cpu_to_le16(sb->s_blocksize - PMFS_DIR_REC_LEN(1)));
+	PM_EQU(de->name_len, 2);
+	PM_STRCPY(de->name, "..");
 	pmfs_memlock_range(sb, de, sb->s_blocksize);
 	pmfs_flush_buffer(de, PMFS_DIR_REC_LEN(2), false);
 	PERSISTENT_MARK();
@@ -548,7 +555,7 @@ int pmfs_check_integrity(struct super_block *sb,
 			/* Try to auto-recover the super block */
 			if (sb)
 				pmfs_memunlock_super(sb, super);
-			memcpy(super, super_redund,
+			PM_MEMCPY(super, super_redund,
 				sizeof(struct pmfs_super_block));
 			if (sb)
 				pmfs_memlock_super(sb, super);
@@ -572,7 +579,7 @@ int pmfs_check_integrity(struct super_block *sb,
 			/* Try to auto-recover the super block */
 			if (sb)
 				pmfs_memunlock_super(sb, super);
-			memcpy(super, super_redund,
+			PM_MEMCPY(super, super_redund,
 				sizeof(struct pmfs_super_block));
 			if (sb)
 				pmfs_memlock_super(sb, super);
@@ -590,7 +597,7 @@ out:
 static void pmfs_recover_truncate_list(struct super_block *sb)
 {
 	struct pmfs_inode_truncate_item *head = pmfs_get_truncate_list_head(sb);
-	u64 ino_next = le64_to_cpu(head->i_next_truncate);
+	u64 ino_next = le64_to_cpu(PM_READ(head->i_next_truncate));
 	struct pmfs_inode *pi;
 	struct pmfs_inode_truncate_item *li;
 	struct inode *inode;
@@ -609,8 +616,8 @@ static void pmfs_recover_truncate_list(struct super_block *sb)
 		if (inode->i_nlink) {
 			/* set allocation hint */
 			pmfs_set_blocksize_hint(sb, pi, 
-					le64_to_cpu(li->i_truncatesize));
-			pmfs_setsize(inode, le64_to_cpu(li->i_truncatesize));
+					le64_to_cpu(PM_READ(li->i_truncatesize)));
+			pmfs_setsize(inode, le64_to_cpu(PM_READ(li->i_truncatesize)));
 			pmfs_update_isize(inode, pi);
 		} else {
 			/* free the inode */
@@ -619,13 +626,13 @@ static void pmfs_recover_truncate_list(struct super_block *sb)
 		}
 		iput(inode);
 		pmfs_flush_buffer(pi, CACHELINE_SIZE, false);
-		ino_next = le64_to_cpu(li->i_next_truncate);
+		ino_next = le64_to_cpu(PM_READ(li->i_next_truncate));
 	}
 	PERSISTENT_MARK();
 	PERSISTENT_BARRIER();
 	/* reset the truncate_list */
 	pmfs_memunlock_range(sb, head, sizeof(*head));
-	head->i_next_truncate = 0;
+	PM_EQU(head->i_next_truncate, 0);
 	pmfs_memlock_range(sb, head, sizeof(*head));
 	pmfs_flush_buffer(head, sizeof(*head), false);
 	PERSISTENT_MARK();
@@ -735,7 +742,7 @@ static int pmfs_fill_super(struct super_block *sb, void *data, int silent)
 		goto out;
 	}
 
-	blocksize = le32_to_cpu(super->s_blocksize);
+	blocksize = le32_to_cpu(PM_READ(super->s_blocksize));
 	pmfs_set_blocksize(sb, blocksize);
 
 	pmfs_dbg_verbose("blocksize %lu\n", blocksize);
@@ -753,7 +760,7 @@ static int pmfs_fill_super(struct super_block *sb, void *data, int silent)
 
 	/* Set it all up.. */
 setup_sb:
-	sb->s_magic = le16_to_cpu(super->s_magic);
+	sb->s_magic = le16_to_cpu(PM_READ(super->s_magic));
 	sb->s_op = &pmfs_sops;
 	sb->s_maxbytes = pmfs_max_size(sb->s_blocksize_bits);
 	sb->s_time_gran = 1;
@@ -917,7 +924,7 @@ static void pmfs_put_super(struct super_block *sb)
 {
 	struct pmfs_sb_info *sbi = PMFS_SB(sb);
 	struct pmfs_super_block *ps = pmfs_get_super(sb);
-	u64 size = le64_to_cpu(ps->s_size);
+	u64 size = le64_to_cpu(PM_READ(ps->s_size));
 	struct pmfs_blocknode *i;
 	struct list_head *head = &(sbi->block_inuse_head);
 

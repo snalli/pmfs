@@ -47,9 +47,9 @@ static int pmfs_add_dirent_to_buf(pmfs_transaction_t *trans,
 			if (pmfs_match(namelen, name, de))
 				return -EEXIST;
 #endif
-			rlen = le16_to_cpu(de->de_len);
-			if (de->ino) {
-				nlen = PMFS_DIR_REC_LEN(de->name_len);
+			rlen = le16_to_cpu(PM_READ(de->de_len));
+			if (PM_READ(de->ino)) {
+				nlen = PMFS_DIR_REC_LEN(PM_READ(de->name_len));
 				if ((rlen - nlen) >= reclen)
 					break;
 			} else if (rlen >= reclen)
@@ -59,17 +59,17 @@ static int pmfs_add_dirent_to_buf(pmfs_transaction_t *trans,
 		if ((char *)de > top)
 			return -ENOSPC;
 	}
-	rlen = le16_to_cpu(de->de_len);
+	rlen = le16_to_cpu(PM_READ(de->de_len));
 
-	if (de->ino) {
+	if (PM_READ(de->ino)) {
 		struct pmfs_direntry *de1;
 		pmfs_add_logentry(dir->i_sb, trans, &de->de_len,
 			sizeof(de->de_len), LE_DATA);
-		nlen = PMFS_DIR_REC_LEN(de->name_len);
+		nlen = PMFS_DIR_REC_LEN(PM_READ(de->name_len));
 		de1 = (struct pmfs_direntry *)((char *)de + nlen);
 		pmfs_memunlock_block(dir->i_sb, blk_base);
-		de1->de_len = cpu_to_le16(rlen - nlen);
-		de->de_len = cpu_to_le16(nlen);
+		PM_EQU(de1->de_len, cpu_to_le16(rlen - nlen)); // de1->de_len = cpu_to_le16(rlen - nlen); /* PM_WRITE */
+		PM_EQU(de->de_len, cpu_to_le16(nlen)); // de->de_len = cpu_to_le16(nlen);         /* PM_WRITE */
 		pmfs_memlock_block(dir->i_sb, blk_base);
 		de = de1;
 	} else {
@@ -79,13 +79,13 @@ static int pmfs_add_dirent_to_buf(pmfs_transaction_t *trans,
 	pmfs_memunlock_block(dir->i_sb, blk_base);
 	/*de->file_type = 0;*/
 	if (inode) {
-		de->ino = cpu_to_le64(inode->i_ino);
+		PM_EQU(de->ino, cpu_to_le64(inode->i_ino)); // de->ino = cpu_to_le64(inode->i_ino); /* PM_WRITE */
 		/*de->file_type = IF2DT(inode->i_mode); */
 	} else {
-		de->ino = 0;
+		PM_EQU(de->ino, 0); //de->ino = 0; /* PM_WRITE */
 	}
-	de->name_len = namelen;
-	memcpy(de->name, name, namelen);
+	PM_EQU(de->name_len, namelen); //de->name_len = namelen; /* PM_WRITE */
+	PM_MEMCPY(de->name, name, namelen); // memcpy(de->name, name, namelen); /* PM_WRITE */
 	pmfs_memlock_block(dir->i_sb, blk_base);
 	pmfs_flush_buffer(de, reclen, false);
 	/*
@@ -97,8 +97,8 @@ static int pmfs_add_dirent_to_buf(pmfs_transaction_t *trans,
 	/*dir->i_version++; */
 
 	pmfs_memunlock_inode(dir->i_sb, pidir);
-	pidir->i_mtime = cpu_to_le32(dir->i_mtime.tv_sec);
-	pidir->i_ctime = cpu_to_le32(dir->i_ctime.tv_sec);
+	PM_EQU(pidir->i_mtime, cpu_to_le32(dir->i_mtime.tv_sec)); // pidir->i_mtime = cpu_to_le32(dir->i_mtime.tv_sec); /* PM_WRITE */
+	PM_EQU(pidir->i_ctime, cpu_to_le32(dir->i_ctime.tv_sec)); // pidir->i_ctime = cpu_to_le32(dir->i_ctime.tv_sec); /* PM_WRITE */ 
 	pmfs_memlock_inode(dir->i_sb, pidir);
 	return 0;
 }
@@ -151,8 +151,8 @@ int pmfs_add_entry(pmfs_transaction_t *trans, struct dentry *dentry,
 	/* No need to log the changes to this de because its a new block */
 	de = (struct pmfs_direntry *)blk_base;
 	pmfs_memunlock_block(sb, blk_base);
-	de->ino = 0;
-	de->de_len = cpu_to_le16(sb->s_blocksize);
+	PM_EQU(de->ino, 0);
+	PM_EQU(de->de_len, cpu_to_le16(sb->s_blocksize));
 	pmfs_memlock_block(sb, blk_base);
 	/* Since this is a new block, no need to log changes to this block */
 	retval = pmfs_add_dirent_to_buf(NULL, dentry, inode, de, blk_base,
@@ -194,19 +194,19 @@ int pmfs_remove_entry(pmfs_transaction_t *trans, struct dentry *de,
 
 	if (block == blocks)
 		goto out;
-	if (prev_entry) {
+	if (PM_READ(prev_entry)) {
 		pmfs_add_logentry(sb, trans, &prev_entry->de_len,
 				sizeof(prev_entry->de_len), LE_DATA);
 		pmfs_memunlock_block(sb, blk_base);
-		prev_entry->de_len =
-			cpu_to_le16(le16_to_cpu(prev_entry->de_len) +
-				    le16_to_cpu(res_entry->de_len));
+		PM_EQU(prev_entry->de_len,
+			cpu_to_le16(le16_to_cpu(PM_READ(prev_entry->de_len)) +
+				    le16_to_cpu(PM_READ(res_entry->de_len))));
 		pmfs_memlock_block(sb, blk_base);
 	} else {
 		pmfs_add_logentry(sb, trans, &res_entry->ino,
 				sizeof(res_entry->ino), LE_DATA);
 		pmfs_memunlock_block(sb, blk_base);
-		res_entry->ino = 0;
+		PM_EQU(res_entry->ino, 0);
 		pmfs_memlock_block(sb, blk_base);
 	}
 	/*dir->i_version++; */
@@ -216,8 +216,8 @@ int pmfs_remove_entry(pmfs_transaction_t *trans, struct dentry *de,
 	pmfs_add_logentry(sb, trans, pidir, MAX_DATA_PER_LENTRY, LE_DATA);
 
 	pmfs_memunlock_inode(sb, pidir);
-	pidir->i_mtime = cpu_to_le32(dir->i_mtime.tv_sec);
-	pidir->i_ctime = cpu_to_le32(dir->i_ctime.tv_sec);
+	PM_EQU(pidir->i_mtime, cpu_to_le32(dir->i_mtime.tv_sec));
+	PM_EQU(pidir->i_ctime, cpu_to_le32(dir->i_ctime.tv_sec));
 	pmfs_memlock_inode(sb, pidir);
 	retval = 0;
 out:
@@ -276,15 +276,15 @@ static int pmfs_readdir(struct file *file, struct dir_context *ctx)
 				ctx->pos = ALIGN(ctx->pos, sb->s_blocksize);
 				break;
 			}
-			offset += le16_to_cpu(de->de_len);
-			if (de->ino) {
-				ino = le64_to_cpu(de->ino);
+			offset += le16_to_cpu(PM_READ(de->de_len));
+			if (PM_READ(de->ino)) {
+				ino = le64_to_cpu(PM_READ(de->ino));
 				pi = pmfs_get_inode(sb, ino);
-				if (!dir_emit(ctx, de->name, de->name_len,
-					ino, IF2DT(le16_to_cpu(pi->i_mode))))
+				if (!dir_emit(ctx, PM_READ(de->name), PM_READ(de->name_len),
+					ino, IF2DT(le16_to_cpu(PM_READ(pi->i_mode)))))
 					return 0;
 			}
-			ctx->pos += le16_to_cpu(de->de_len);
+			ctx->pos += le16_to_cpu(PM_READ(de->de_len));
 		}
 		offset = 0;
 	}
